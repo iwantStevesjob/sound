@@ -1,10 +1,8 @@
 <!DOCTYPE html>
 <html>
-<!-- Previous head and style sections remain the same -->
 <head>
     <title>Binaural Beats Generator</title>
     <style>
-        /* Previous styles remain unchanged */
         body {
             font-family: Arial, sans-serif;
             max-width: 800px;
@@ -96,6 +94,11 @@
             </div>
 
             <div class="control-group">
+                <label>Balance: <span id="balanceLabel">Center</span></label>
+                <input type="range" id="balance" min="-1" max="1" step="0.01" value="0">
+            </div>
+
+            <div class="control-group">
                 <label>Waveform:</label>
                 <select id="waveform">
                     <option value="sine">Sine Wave</option>
@@ -122,10 +125,12 @@
                 this.audioContext = null;
                 this.leftOsc = null;
                 this.rightOsc = null;
+                this.leftGain = null;
+                this.rightGain = null;
                 this.gainNode = null;
                 this.analyser = null;
                 this.isPlaying = false;
-                this.rampTime = 0.1; // 100ms transition time
+                this.rampTime = 0.1;
                 
                 this.canvas = document.getElementById('visualizer');
                 this.canvasCtx = this.canvas.getContext('2d');
@@ -163,7 +168,7 @@
                 gainNode.connect(panner);
                 panner.connect(this.gainNode);
                 
-                return osc;
+                return { osc, gainNode };
             }
 
             async start() {
@@ -176,10 +181,17 @@
                 const leftFreq = parseFloat(leftFreqSlider.value);
                 const rightFreq = parseFloat(rightFreqSlider.value);
                 const volume = parseFloat(volumeSlider.value);
+                const balance = parseFloat(balanceSlider.value);
 
-                this.leftOsc = this.createOscillator(leftFreq, -1);
-                this.rightOsc = this.createOscillator(rightFreq, 1);
+                const left = this.createOscillator(leftFreq, -1);
+                const right = this.createOscillator(rightFreq, 1);
                 
+                this.leftOsc = left.osc;
+                this.rightOsc = right.osc;
+                this.leftGain = left.gainNode;
+                this.rightGain = right.gainNode;
+                
+                this.updateBalance(balance);
                 this.gainNode.gain.setValueAtTime(volume, this.audioContext.currentTime);
                 
                 this.leftOsc.start();
@@ -218,6 +230,20 @@
                     const now = this.audioContext.currentTime;
                     this.gainNode.gain.cancelScheduledValues(now);
                     this.gainNode.gain.setTargetAtTime(volume, now, this.rampTime);
+                }
+            }
+
+            updateBalance(balance) {
+                if (this.leftGain && this.rightGain) {
+                    const now = this.audioContext.currentTime;
+                    const leftGain = Math.min(1, 1 - balance);
+                    const rightGain = Math.min(1, 1 + balance);
+                    
+                    this.leftGain.gain.cancelScheduledValues(now);
+                    this.rightGain.gain.cancelScheduledValues(now);
+                    
+                    this.leftGain.gain.setTargetAtTime(leftGain, now, this.rampTime);
+                    this.rightGain.gain.setTargetAtTime(rightGain, now, this.rampTime);
                 }
             }
 
@@ -261,12 +287,19 @@
             document.getElementById('leftFreqLabel').textContent = leftFreqSlider.value;
             document.getElementById('rightFreqLabel').textContent = rightFreqSlider.value;
             document.getElementById('volumeLabel').textContent = Math.round(volumeSlider.value * 100);
+            
+            const balance = parseFloat(balanceSlider.value);
+            let balanceText = 'Center';
+            if (balance < 0) balanceText = `${Math.round(-balance * 100)}% Left`;
+            else if (balance > 0) balanceText = `${Math.round(balance * 100)}% Right`;
+            document.getElementById('balanceLabel').textContent = balanceText;
         }
 
         const playButton = document.getElementById('playButton');
         const leftFreqSlider = document.getElementById('leftFreq');
         const rightFreqSlider = document.getElementById('rightFreq');
         const volumeSlider = document.getElementById('volume');
+        const balanceSlider = document.getElementById('balance');
         const waveformSelect = document.getElementById('waveform');
 
         function updateRightFrequencyForPreset(leftFreq) {
@@ -307,6 +340,13 @@
             }
         });
 
+        balanceSlider.addEventListener('input', () => {
+            updateLabels();
+            if (generator.isPlaying) {
+                generator.updateBalance(parseFloat(balanceSlider.value));
+            }
+        });
+
         playButton.addEventListener('click', () => {
             if (generator.isPlaying) {
                 generator.stop();
@@ -326,7 +366,7 @@
 
         waveformSelect.addEventListener('change', () => {
             if (generator.isPlaying) {
-                generator.start(); // Restart with new waveform
+                generator.start();
             }
         });
 

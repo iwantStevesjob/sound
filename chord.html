@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Guitar Chord/Note Detector</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pitchfinder/2.3.2/pitchfinder.min.js"></script>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -91,6 +92,17 @@
             color: #7f8c8d;
             margin-bottom: 10px;
         }
+        .debug-info {
+            font-size: 12px;
+            color: #7f8c8d;
+            text-align: left;
+            margin-top: 20px;
+            padding: 10px;
+            background-color: #f9f9f9;
+            border-radius: 5px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
     </style>
 </head>
 <body>
@@ -111,6 +123,8 @@
                 <button id="startButton">Start Listening</button>
                 <button id="stopButton" disabled>Stop Listening</button>
             </div>
+
+            <div class="debug-info" id="debug-info"></div>
         </div>
     </div>
 
@@ -154,12 +168,12 @@
         
         // Guitar standard tuning strings (from low to high): E2, A2, D3, G3, B3, E4
         const GUITAR_STRINGS = [
-            { note: 'E', octave: 2 }, // E2
-            { note: 'A', octave: 2 }, // A2
-            { note: 'D', octave: 3 }, // D3
-            { note: 'G', octave: 3 }, // G3
-            { note: 'B', octave: 3 }, // B3
-            { note: 'E', octave: 4 }  // E4
+            { note: 'E', octave: 2, freq: 82.41 },  // E2
+            { note: 'A', octave: 2, freq: 110.00 }, // A2
+            { note: 'D', octave: 3, freq: 146.83 }, // D3
+            { note: 'G', octave: 3, freq: 196.00 }, // G3
+            { note: 'B', octave: 3, freq: 246.94 }, // B3
+            { note: 'E', octave: 4, freq: 329.63 }  // E4
         ];
         
         // DOM Elements
@@ -171,26 +185,33 @@
         const visualizerContext = visualizer.getContext('2d');
         const statusElement = document.getElementById('status');
         const noteHistory = document.getElementById('note-history');
+        const debugInfo = document.getElementById('debug-info');
         
         let audioContext;
         let analyser;
         let microphone;
-        let javascriptNode;
-        let activeNotes = new Set();
-        let lastDetectedNotes = [];
+        let scriptProcessor;
+        let activeNotes = [];
+        let recentNotes = [];
         let isListening = false;
         let animationFrameId;
         let bufferLength;
         let dataArray;
+        let timeDataArray;
         
         // Set the correct dimensions for the canvas
         function setupCanvas() {
-            visualizer.width = visualizer.clientWidth;
-            visualizer.height = visualizer.clientHeight;
+            const dpr = window.devicePixelRatio || 1;
+            const rect = visualizer.getBoundingClientRect();
+            visualizer.width = rect.width * dpr;
+            visualizer.height = rect.height * dpr;
+            visualizerContext.scale(dpr, dpr);
         }
         
         // Convert frequency to note
         function frequencyToNote(frequency) {
+            if (!frequency || frequency === 0) return null;
+            
             // Calculate the number of half steps away from A4
             const halfStepsFromA4 = Math.round(12 * Math.log2(frequency / A4_FREQ));
             
@@ -198,102 +219,85 @@
             const midiNoteNumber = A4_INDEX + halfStepsFromA4;
             
             // Calculate note and octave
-            const noteIndex = (midiNoteNumber - 12) % 12;
-            const octave = Math.floor((midiNoteNumber - 12) / 12);
+            const noteIndex = ((midiNoteNumber % 12) + 12) % 12;
+            const octave = Math.floor(midiNoteNumber / 12) - 1;
             
             return {
                 note: NOTES[noteIndex],
                 octave: octave,
-                frequency: frequency
+                frequency: frequency,
+                midiNote: midiNoteNumber
             };
-        }
-        
-        // Find the closest guitar string for a given frequency
-        function findClosestGuitarString(noteInfo) {
-            const { note, octave } = noteInfo;
-            let closestString = null;
-            let smallestDistance = Infinity;
-            
-            GUITAR_STRINGS.forEach((string, index) => {
-                // Calculate "distance" based on note and octave
-                const stringNoteIndex = NOTES.indexOf(string.note);
-                const noteIndex = NOTES.indexOf(note);
-                
-                // Calculate total semitones for both
-                const stringSemitones = string.octave * 12 + stringNoteIndex;
-                const noteSemitones = octave * 12 + noteIndex;
-                
-                const distance = Math.abs(stringSemitones - noteSemitones);
-                
-                if (distance < smallestDistance) {
-                    smallestDistance = distance;
-                    closestString = {
-                        string: index + 1, // 1-indexed for human readability
-                        note: string.note,
-                        octave: string.octave
-                    };
-                }
-            });
-            
-            return closestString;
         }
         
         // Find possible chord based on detected notes
         function findPossibleChord(detectedNotes) {
-            if (detectedNotes.length === 0) return null;
-            if (detectedNotes.length === 1) return detectedNotes[0].note;
+            if (!detectedNotes || detectedNotes.length === 0) return null;
             
             // Extract just the note names (without octaves)
-            const noteNames = detectedNotes.map(noteInfo => noteInfo.note);
+            const noteNames = detectedNotes
+                .filter(noteInfo => noteInfo && noteInfo.note)
+                .map(noteInfo => noteInfo.note);
+                
             const uniqueNoteNames = [...new Set(noteNames)];
             
-            // If we only have one unique note name, it's not a chord
-            if (uniqueNoteNames.length === 1) return uniqueNoteNames[0];
+            // If we don't have enough unique notes for a chord
+            if (uniqueNoteNames.length < 3) {
+                if (uniqueNoteNames.length === 1) return uniqueNoteNames[0];
+                if (uniqueNoteNames.length === 2) return `${uniqueNoteNames.join('/')} (interval)`;
+                return null;
+            }
             
             // Check each chord definition against our detected notes
             let bestMatch = null;
-            let bestMatchCount = 0;
-            let bestMatchName = null;
+            let bestMatchScore = 0;
             
             for (const [chordName, chordNotes] of Object.entries(CHORDS)) {
                 // Count how many of the chord's notes we've detected
                 const matchedNotes = chordNotes.filter(note => uniqueNoteNames.includes(note));
-                const matchCount = matchedNotes.length;
+                const unmatchedNotes = chordNotes.filter(note => !uniqueNoteNames.includes(note));
+                const extraNotes = uniqueNoteNames.filter(note => !chordNotes.includes(note));
                 
-                // For a match, we should have at least 3 notes, and they should represent at least 60% of the chord
-                if (matchCount >= 3 && matchCount >= chordNotes.length * 0.6) {
-                    // If this is a better match than our previous best, update
-                    if (matchCount > bestMatchCount) {
-                        bestMatchCount = matchCount;
-                        bestMatch = matchedNotes;
-                        bestMatchName = chordName;
-                    }
+                // Calculate a score: 
+                // +2 for each matched note
+                // -1 for each unmatched chord note
+                // -0.5 for each extra detected note (could be noise or embellishments)
+                const matchScore = (matchedNotes.length * 2) - unmatchedNotes.length - (extraNotes.length * 0.5);
+                
+                // We need a minimum match quality
+                if (matchedNotes.length >= Math.min(3, chordNotes.length) && matchScore > bestMatchScore) {
+                    bestMatchScore = matchScore;
+                    bestMatch = chordName;
                 }
             }
             
-            return bestMatchName || "Unknown";
+            return bestMatch || `Complex (${uniqueNoteNames.join(',')})`;
         }
         
         // Update the visualization
         function updateVisualization() {
             if (!isListening) return;
             
-            analyser.getByteTimeDomainData(dataArray);
+            // Get time domain data for waveform
+            analyser.getByteTimeDomainData(timeDataArray);
             
+            // Clear background
             visualizerContext.fillStyle = 'rgb(240, 240, 240)';
-            visualizerContext.fillRect(0, 0, visualizer.width, visualizer.height);
+            visualizerContext.fillRect(0, 0, visualizer.width / window.devicePixelRatio, visualizer.height / window.devicePixelRatio);
             
+            // Draw waveform
             visualizerContext.lineWidth = 2;
             visualizerContext.strokeStyle = 'rgb(0, 123, 255)';
-            
             visualizerContext.beginPath();
             
-            const sliceWidth = visualizer.width / bufferLength;
+            const width = visualizer.width / window.devicePixelRatio;
+            const height = visualizer.height / window.devicePixelRatio;
+            const sliceWidth = width / timeDataArray.length;
             let x = 0;
             
-            for (let i = 0; i < bufferLength; i++) {
-                const v = dataArray[i] / 128.0;
-                const y = v * visualizer.height / 2;
+            for (let i = 0; i < timeDataArray.length; i++) {
+                const v = timeDataArray[i] / 128.0;
+                const y = v * height / 2;
                 
                 if (i === 0) {
                     visualizerContext.moveTo(x, y);
@@ -304,64 +308,122 @@
                 x += sliceWidth;
             }
             
-            visualizerContext.lineTo(visualizer.width, visualizer.height / 2);
+            visualizerContext.lineTo(width, height / 2);
             visualizerContext.stroke();
+            
+            // Also draw frequency data
+            analyser.getByteFrequencyData(dataArray);
+            
+            visualizerContext.fillStyle = 'rgba(0, 200, 100, 0.5)';
+            const barWidth = (width / bufferLength) * 2.5;
+            x = 0;
+            
+            for (let i = 0; i < bufferLength; i++) {
+                const barHeight = (dataArray[i] / 255) * height;
+                visualizerContext.fillRect(x, height - barHeight, barWidth, barHeight);
+                x += barWidth + 1;
+            }
             
             animationFrameId = requestAnimationFrame(updateVisualization);
         }
         
-        // Process audio data and detect pitch
-        function processAudio() {
-            analyser.getFloatFrequencyData(dataArray);
+        // Add note to history
+        function addNoteToHistory(noteInfo) {
+            if (!noteInfo || !noteInfo.note) return;
             
-            // Find the maximum frequency bin
-            let maxValue = -Infinity;
-            let maxIndex = -1;
+            // Add to note history display
+            const noteElement = document.createElement('div');
+            noteElement.className = 'note-item';
+            noteElement.textContent = `${noteInfo.note}${noteInfo.octave}`;
+            if (noteHistory.childElementCount >= 8) {
+                noteHistory.removeChild(noteHistory.firstChild);
+            }
+            noteHistory.appendChild(noteElement);
+        }
+        
+        // Update active notes collection based on current detection
+        function updateActiveNotes(newNote) {
+            if (!newNote) return;
             
-            for (let i = 0; i < bufferLength; i++) {
-                if (dataArray[i] > maxValue) {
-                    maxValue = dataArray[i];
-                    maxIndex = i;
-                }
+            // Add to active notes if not already present
+            const existingIndex = activeNotes.findIndex(n => n.note === newNote.note);
+            
+            if (existingIndex === -1) {
+                activeNotes.push(newNote);
+                addNoteToHistory(newNote);
+            } else {
+                // Update the existing note's timestamp
+                activeNotes[existingIndex].timestamp = Date.now();
             }
             
-            // Convert bin index to frequency (Hz)
-            const frequency = maxIndex * audioContext.sampleRate / (analyser.fftSize * 2);
+            // Remove notes older than 2 seconds
+            const now = Date.now();
+            activeNotes = activeNotes.filter(note => (now - note.timestamp) < 2000);
             
-            // Only process if the frequency is in the range of a guitar (about 80Hz to 1200Hz)
-            if (frequency > 80 && frequency < 1200 && maxValue > -60) {
-                const noteInfo = frequencyToNote(frequency);
-                const closestString = findClosestGuitarString(noteInfo);
+            // Add to recent notes for more stable detection
+            recentNotes.push(newNote);
+            if (recentNotes.length > 10) {
+                recentNotes.shift();
+            }
+            
+            // Update display
+            updateDisplay();
+        }
+        
+        // Detect what notes or chords are currently active
+        function updateDisplay() {
+            if (activeNotes.length === 0) {
+                resultDisplay.textContent = '-';
+                return;
+            }
+            
+            // Find unique notes for chord detection
+            const uniqueNotes = [];
+            NOTES.forEach(noteName => {
+                const matchingNote = activeNotes.find(n => n.note === noteName);
+                if (matchingNote) uniqueNotes.push(matchingNote);
+            });
+            
+            // If we have enough notes, try to detect a chord
+            if (uniqueNotes.length >= 2) {
+                const possibleChord = findPossibleChord(uniqueNotes);
+                resultDisplay.textContent = possibleChord || uniqueNotes[0].note;
                 
-                frequencyDisplay.textContent = `Frequency: ${frequency.toFixed(1)} Hz`;
+                // Debug info
+                debugInfo.textContent = `Active notes: ${activeNotes.map(n => `${n.note}${n.octave}`).join(', ')}\n`;
+                debugInfo.textContent += `Unique notes: ${uniqueNotes.map(n => n.note).join(', ')}\n`;
+                debugInfo.textContent += `Detected: ${possibleChord}`;
+            } else if (uniqueNotes.length === 1) {
+                resultDisplay.textContent = uniqueNotes[0].note;
+                debugInfo.textContent = `Single note: ${uniqueNotes[0].note}${uniqueNotes[0].octave} (${uniqueNotes[0].frequency.toFixed(1)} Hz)`;
+            } else {
+                resultDisplay.textContent = '-';
+            }
+        }
+        
+        // Process audio data using PitchFinder
+        function processAudioData(audioProcessingEvent) {
+            if (!isListening) return;
+            
+            const inputBuffer = audioProcessingEvent.inputBuffer;
+            const inputData = inputBuffer.getChannelData(0);
+            
+            // Use PitchFinder YIN algorithm
+            const detectPitch = window.Pitchfinder.YIN();
+            const pitch = detectPitch(inputData);
+            
+            if (pitch && pitch > 80 && pitch < 1200) {
+                const noteInfo = frequencyToNote(pitch);
                 
-                // Add to active notes if not already present
-                let noteKey = `${noteInfo.note}${noteInfo.octave}`;
-                if (!activeNotes.has(noteKey)) {
-                    activeNotes.add(noteKey);
+                if (noteInfo) {
+                    // Update display with frequency
+                    frequencyDisplay.textContent = `Frequency: ${pitch.toFixed(1)} Hz`;
                     
-                    // Add to note history display
-                    const noteElement = document.createElement('div');
-                    noteElement.className = 'note-item';
-                    noteElement.textContent = `${noteInfo.note}${noteInfo.octave}`;
-                    if (noteHistory.childElementCount >= 8) {
-                        noteHistory.removeChild(noteHistory.firstChild);
-                    }
-                    noteHistory.appendChild(noteElement);
+                    // Add timestamp for note tracking
+                    noteInfo.timestamp = Date.now();
                     
-                    // Build array of detected notes for chord detection
-                    lastDetectedNotes.push(noteInfo);
-                    if (lastDetectedNotes.length > 4) {
-                        lastDetectedNotes.shift();
-                    }
-                    
-                    // Try to detect a chord
-                    const possibleChord = findPossibleChord(lastDetectedNotes);
-                    if (possibleChord) {
-                        resultDisplay.textContent = possibleChord;
-                    } else {
-                        resultDisplay.textContent = noteInfo.note;
-                    }
+                    // Update active notes for chord detection
+                    updateActiveNotes(noteInfo);
                 }
             }
         }
@@ -370,40 +432,51 @@
         async function startAudioProcessing() {
             try {
                 // Reset state
-                activeNotes.clear();
-                lastDetectedNotes = [];
+                activeNotes = [];
+                recentNotes = [];
                 
                 // Set up the audio context
                 audioContext = new (window.AudioContext || window.webkitAudioContext)();
                 
                 // Get access to the microphone
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: { 
+                        echoCancellation: false,
+                        noiseSuppression: false,
+                        autoGainControl: false
+                    } 
+                });
+                
                 statusElement.textContent = "Listening to your guitar...";
                 
                 // Create an audio source from the microphone
                 microphone = audioContext.createMediaStreamSource(stream);
                 
-                // Create an analyser node
+                // Create an analyser node for visualization
                 analyser = audioContext.createAnalyser();
                 analyser.fftSize = 2048;
                 analyser.smoothingTimeConstant = 0.8;
                 
-                // Connect the microphone to the analyser
-                microphone.connect(analyser);
+                // Create a script processor node for pitch detection
+                scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+                scriptProcessor.onaudioprocess = processAudioData;
                 
-                // Set up the data array for analysis
+                // Connect the nodes: microphone -> analyser -> scriptProcessor -> destination (but not connected to speakers)
+                microphone.connect(analyser);
+                analyser.connect(scriptProcessor);
+                scriptProcessor.connect(audioContext.destination);
+                
+                // Set up the data arrays for analysis
                 bufferLength = analyser.frequencyBinCount;
-                dataArray = new Float32Array(bufferLength);
+                dataArray = new Uint8Array(bufferLength);
+                timeDataArray = new Uint8Array(analyser.fftSize);
                 
                 // Start the visualization
                 setupCanvas();
                 updateVisualization();
                 
-                // Start processing audio at intervals
-                isListening = true;
-                setInterval(processAudio, 100);
-                
                 // Update button states
+                isListening = true;
                 startButton.disabled = true;
                 stopButton.disabled = false;
                 
@@ -421,21 +494,33 @@
                     cancelAnimationFrame(animationFrameId);
                 }
                 
-                // Disconnect the microphone if it exists
+                // Disconnect audio nodes
+                if (scriptProcessor) {
+                    scriptProcessor.disconnect();
+                }
+                
+                if (analyser) {
+                    analyser.disconnect();
+                }
+                
                 if (microphone) {
                     microphone.disconnect();
                 }
                 
                 // Close the audio context
-                audioContext.close();
-                
-                // Update status and UI
-                isListening = false;
-                statusElement.textContent = "Listening stopped.";
-                
-                // Update button states
-                startButton.disabled = false;
-                stopButton.disabled = true;
+                audioContext.close().then(() => {
+                    // Update status and UI
+                    isListening = false;
+                    statusElement.textContent = "Listening stopped.";
+                    
+                    // Clear displays
+                    resultDisplay.textContent = "-";
+                    frequencyDisplay.textContent = "Frequency: 0 Hz";
+                    
+                    // Update button states
+                    startButton.disabled = false;
+                    stopButton.disabled = true;
+                });
             }
         }
         

@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Guitar Chord/Note Detector</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pitchfinder/2.3.2/pitchfinder.min.js"></script>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -69,10 +68,28 @@
             border-radius: 5px;
             margin: 20px 0;
             overflow: hidden;
+            position: relative;
         }
         canvas {
             width: 100%;
             height: 100%;
+        }
+        #mic-level {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            height: 100%;
+            width: 20px;
+            background-color: #f9f9f9;
+            border-right: 1px solid #ddd;
+        }
+        #mic-bar {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 20px;
+            background-color: #27ae60;
+            transition: height 0.1s ease;
         }
         #note-history {
             display: flex;
@@ -91,6 +108,27 @@
             font-style: italic;
             color: #7f8c8d;
             margin-bottom: 10px;
+        }
+        .microphone-status {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 15px 0;
+            gap: 10px;
+        }
+        .mic-indicator {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            background-color: #e74c3c;
+            display: inline-block;
+            transition: background-color 0.3s ease;
+        }
+        .mic-indicator.active {
+            background-color: #27ae60;
+        }
+        .mic-text {
+            font-weight: bold;
         }
         .debug-info {
             font-size: 12px;
@@ -111,8 +149,16 @@
         
         <div id="status">Click "Start Listening" to begin</div>
         
+        <div class="microphone-status">
+            <div id="mic-indicator" class="mic-indicator"></div>
+            <span class="mic-text">Microphone: <span id="mic-status">Not active</span></span>
+        </div>
+        
         <div class="detector">
             <div class="visualizer">
+                <div id="mic-level">
+                    <div id="mic-bar" style="height: 0%;"></div>
+                </div>
                 <canvas id="visualizer"></canvas>
             </div>
             <div id="frequency">Frequency: 0 Hz</div>
@@ -122,6 +168,7 @@
             <div>
                 <button id="startButton">Start Listening</button>
                 <button id="stopButton" disabled>Stop Listening</button>
+                <button id="testButton">Test Microphone</button>
             </div>
 
             <div class="debug-info" id="debug-info"></div>
@@ -179,6 +226,7 @@
         // DOM Elements
         const startButton = document.getElementById('startButton');
         const stopButton = document.getElementById('stopButton');
+        const testButton = document.getElementById('testButton');
         const resultDisplay = document.getElementById('result');
         const frequencyDisplay = document.getElementById('frequency');
         const visualizer = document.getElementById('visualizer');
@@ -186,26 +234,26 @@
         const statusElement = document.getElementById('status');
         const noteHistory = document.getElementById('note-history');
         const debugInfo = document.getElementById('debug-info');
+        const micIndicator = document.getElementById('mic-indicator');
+        const micStatus = document.getElementById('mic-status');
+        const micBar = document.getElementById('mic-bar');
         
         let audioContext;
         let analyser;
         let microphone;
-        let scriptProcessor;
         let activeNotes = [];
-        let recentNotes = [];
         let isListening = false;
         let animationFrameId;
         let bufferLength;
         let dataArray;
         let timeDataArray;
+        let audioVolumeCheckInterval;
+        let microphoneWorking = false;
         
         // Set the correct dimensions for the canvas
         function setupCanvas() {
-            const dpr = window.devicePixelRatio || 1;
-            const rect = visualizer.getBoundingClientRect();
-            visualizer.width = rect.width * dpr;
-            visualizer.height = rect.height * dpr;
-            visualizerContext.scale(dpr, dpr);
+            visualizer.width = visualizer.clientWidth - 20; // Account for mic level indicator
+            visualizer.height = visualizer.clientHeight;
         }
         
         // Convert frequency to note
@@ -230,9 +278,29 @@
             };
         }
         
+        // Function to find peaks in a signal (basic pitch detection)
+        function findPeaks(data, threshold = 0.5) {
+            const peaks = [];
+            let isPeak = false;
+            
+            for (let i = 1; i < data.length - 1; i++) {
+                if (data[i] > threshold && data[i] > data[i-1] && data[i] > data[i+1]) {
+                    if (!isPeak) {
+                        peaks.push(i);
+                        isPeak = true;
+                    }
+                } else {
+                    isPeak = false;
+                }
+            }
+            
+            return peaks;
+        }
+        
         // Find possible chord based on detected notes
         function findPossibleChord(detectedNotes) {
             if (!detectedNotes || detectedNotes.length === 0) return null;
+            if (detectedNotes.length === 1) return detectedNotes[0].note;
             
             // Extract just the note names (without octaves)
             const noteNames = detectedNotes
@@ -244,7 +312,7 @@
             // If we don't have enough unique notes for a chord
             if (uniqueNoteNames.length < 3) {
                 if (uniqueNoteNames.length === 1) return uniqueNoteNames[0];
-                if (uniqueNoteNames.length === 2) return `${uniqueNoteNames.join('/')} (interval)`;
+                if (uniqueNoteNames.length === 2) return `${uniqueNoteNames.join('/')}`;
                 return null;
             }
             
@@ -256,13 +324,11 @@
                 // Count how many of the chord's notes we've detected
                 const matchedNotes = chordNotes.filter(note => uniqueNoteNames.includes(note));
                 const unmatchedNotes = chordNotes.filter(note => !uniqueNoteNames.includes(note));
-                const extraNotes = uniqueNoteNames.filter(note => !chordNotes.includes(note));
                 
                 // Calculate a score: 
-                // +2 for each matched note
-                // -1 for each unmatched chord note
-                // -0.5 for each extra detected note (could be noise or embellishments)
-                const matchScore = (matchedNotes.length * 2) - unmatchedNotes.length - (extraNotes.length * 0.5);
+                // +1 for each matched note
+                // -0.5 for each unmatched chord note
+                const matchScore = matchedNotes.length - (unmatchedNotes.length * 0.5);
                 
                 // We need a minimum match quality
                 if (matchedNotes.length >= Math.min(3, chordNotes.length) && matchScore > bestMatchScore) {
@@ -271,7 +337,7 @@
                 }
             }
             
-            return bestMatch || `Complex (${uniqueNoteNames.join(',')})`;
+            return bestMatch || uniqueNoteNames[0];
         }
         
         // Update the visualization
@@ -281,23 +347,39 @@
             // Get time domain data for waveform
             analyser.getByteTimeDomainData(timeDataArray);
             
+            // Calculate volume for mic level indicator
+            let sum = 0;
+            for (let i = 0; i < timeDataArray.length; i++) {
+                sum += Math.abs(timeDataArray[i] - 128);
+            }
+            const averageVolume = sum / timeDataArray.length;
+            const volumePercentage = averageVolume / 128 * 100 * 4; // Scale up for better visibility
+            
+            // Update mic level bar
+            micBar.style.height = `${Math.min(100, volumePercentage)}%`;
+            
+            // Check if microphone is detecting sound
+            if (averageVolume > 1) {
+                microphoneWorking = true;
+                micIndicator.classList.add('active');
+                micStatus.textContent = 'Active';
+            }
+            
             // Clear background
             visualizerContext.fillStyle = 'rgb(240, 240, 240)';
-            visualizerContext.fillRect(0, 0, visualizer.width / window.devicePixelRatio, visualizer.height / window.devicePixelRatio);
+            visualizerContext.fillRect(0, 0, visualizer.width, visualizer.height);
             
             // Draw waveform
             visualizerContext.lineWidth = 2;
             visualizerContext.strokeStyle = 'rgb(0, 123, 255)';
             visualizerContext.beginPath();
             
-            const width = visualizer.width / window.devicePixelRatio;
-            const height = visualizer.height / window.devicePixelRatio;
-            const sliceWidth = width / timeDataArray.length;
+            const sliceWidth = visualizer.width / timeDataArray.length;
             let x = 0;
             
             for (let i = 0; i < timeDataArray.length; i++) {
                 const v = timeDataArray[i] / 128.0;
-                const y = v * height / 2;
+                const y = v * visualizer.height / 2;
                 
                 if (i === 0) {
                     visualizerContext.moveTo(x, y);
@@ -308,21 +390,24 @@
                 x += sliceWidth;
             }
             
-            visualizerContext.lineTo(width, height / 2);
+            visualizerContext.lineTo(visualizer.width, visualizer.height / 2);
             visualizerContext.stroke();
             
             // Also draw frequency data
             analyser.getByteFrequencyData(dataArray);
             
             visualizerContext.fillStyle = 'rgba(0, 200, 100, 0.5)';
-            const barWidth = (width / bufferLength) * 2.5;
+            const barWidth = (visualizer.width / bufferLength) * 2.5;
             x = 0;
             
             for (let i = 0; i < bufferLength; i++) {
-                const barHeight = (dataArray[i] / 255) * height;
-                visualizerContext.fillRect(x, height - barHeight, barWidth, barHeight);
+                const barHeight = (dataArray[i] / 255) * visualizer.height;
+                visualizerContext.fillRect(x, visualizer.height - barHeight, barWidth, barHeight);
                 x += barWidth + 1;
             }
+            
+            // Detect frequencies from the data
+            detectFrequencies();
             
             animationFrameId = requestAnimationFrame(updateVisualization);
         }
@@ -349,6 +434,7 @@
             const existingIndex = activeNotes.findIndex(n => n.note === newNote.note);
             
             if (existingIndex === -1) {
+                newNote.timestamp = Date.now();
                 activeNotes.push(newNote);
                 addNoteToHistory(newNote);
             } else {
@@ -359,12 +445,6 @@
             // Remove notes older than 2 seconds
             const now = Date.now();
             activeNotes = activeNotes.filter(note => (now - note.timestamp) < 2000);
-            
-            // Add to recent notes for more stable detection
-            recentNotes.push(newNote);
-            if (recentNotes.length > 10) {
-                recentNotes.shift();
-            }
             
             // Update display
             updateDisplay();
@@ -385,7 +465,7 @@
             });
             
             // If we have enough notes, try to detect a chord
-            if (uniqueNotes.length >= 2) {
+            if (uniqueNotes.length >= 3) {
                 const possibleChord = findPossibleChord(uniqueNotes);
                 resultDisplay.textContent = possibleChord || uniqueNotes[0].note;
                 
@@ -393,7 +473,7 @@
                 debugInfo.textContent = `Active notes: ${activeNotes.map(n => `${n.note}${n.octave}`).join(', ')}\n`;
                 debugInfo.textContent += `Unique notes: ${uniqueNotes.map(n => n.note).join(', ')}\n`;
                 debugInfo.textContent += `Detected: ${possibleChord}`;
-            } else if (uniqueNotes.length === 1) {
+            } else if (uniqueNotes.length > 0) {
                 resultDisplay.textContent = uniqueNotes[0].note;
                 debugInfo.textContent = `Single note: ${uniqueNotes[0].note}${uniqueNotes[0].octave} (${uniqueNotes[0].frequency.toFixed(1)} Hz)`;
             } else {
@@ -401,138 +481,52 @@
             }
         }
         
-        // Process audio data using PitchFinder
-        function processAudioData(audioProcessingEvent) {
-            if (!isListening) return;
+        // Simple frequency detection from FFT data
+        function detectFrequencies() {
+            // Find the bin with the highest amplitude
+            let maxBin = 0;
+            let maxAmplitude = -Infinity;
             
-            const inputBuffer = audioProcessingEvent.inputBuffer;
-            const inputData = inputBuffer.getChannelData(0);
+            // We're only interested in frequencies relevant to guitar (roughly 80Hz - 1200Hz)
+            const lowerBinLimit = Math.floor(80 * bufferLength / (audioContext.sampleRate / 2));
+            const upperBinLimit = Math.ceil(1200 * bufferLength / (audioContext.sampleRate / 2));
             
-            // Use PitchFinder YIN algorithm
-            const detectPitch = window.Pitchfinder.YIN();
-            const pitch = detectPitch(inputData);
+            for (let i = lowerBinLimit; i < upperBinLimit && i < bufferLength; i++) {
+                if (dataArray[i] > maxAmplitude) {
+                    maxAmplitude = dataArray[i];
+                    maxBin = i;
+                }
+            }
             
-            if (pitch && pitch > 80 && pitch < 1200) {
-                const noteInfo = frequencyToNote(pitch);
+            // Only process if there's a significant peak (avoid background noise)
+            if (maxAmplitude > 30) { // Threshold value
+                // Convert bin index to frequency
+                const frequency = maxBin * audioContext.sampleRate / (analyser.fftSize);
                 
+                // Update frequency display
+                frequencyDisplay.textContent = `Frequency: ${frequency.toFixed(1)} Hz`;
+                
+                // Convert frequency to note
+                const noteInfo = frequencyToNote(frequency);
                 if (noteInfo) {
-                    // Update display with frequency
-                    frequencyDisplay.textContent = `Frequency: ${pitch.toFixed(1)} Hz`;
-                    
-                    // Add timestamp for note tracking
-                    noteInfo.timestamp = Date.now();
-                    
-                    // Update active notes for chord detection
                     updateActiveNotes(noteInfo);
                 }
             }
         }
         
-        // Start the audio processing
-        async function startAudioProcessing() {
-            try {
-                // Reset state
-                activeNotes = [];
-                recentNotes = [];
+        // Test if the microphone is working
+        function testMicrophone() {
+            statusElement.textContent = "Testing microphone... Please make a sound.";
+            
+            if (audioContext && isListening) {
+                // Reset state and wait for detection
+                microphoneWorking = false;
+                micIndicator.classList.remove('active');
+                micStatus.textContent = 'Testing...';
                 
-                // Set up the audio context
-                audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                
-                // Get access to the microphone
-                const stream = await navigator.mediaDevices.getUserMedia({ 
-                    audio: { 
-                        echoCancellation: false,
-                        noiseSuppression: false,
-                        autoGainControl: false
-                    } 
-                });
-                
-                statusElement.textContent = "Listening to your guitar...";
-                
-                // Create an audio source from the microphone
-                microphone = audioContext.createMediaStreamSource(stream);
-                
-                // Create an analyser node for visualization
-                analyser = audioContext.createAnalyser();
-                analyser.fftSize = 2048;
-                analyser.smoothingTimeConstant = 0.8;
-                
-                // Create a script processor node for pitch detection
-                scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
-                scriptProcessor.onaudioprocess = processAudioData;
-                
-                // Connect the nodes: microphone -> analyser -> scriptProcessor -> destination (but not connected to speakers)
-                microphone.connect(analyser);
-                analyser.connect(scriptProcessor);
-                scriptProcessor.connect(audioContext.destination);
-                
-                // Set up the data arrays for analysis
-                bufferLength = analyser.frequencyBinCount;
-                dataArray = new Uint8Array(bufferLength);
-                timeDataArray = new Uint8Array(analyser.fftSize);
-                
-                // Start the visualization
-                setupCanvas();
-                updateVisualization();
-                
-                // Update button states
-                isListening = true;
-                startButton.disabled = true;
-                stopButton.disabled = false;
-                
-            } catch (error) {
-                console.error("Error accessing microphone:", error);
-                statusElement.textContent = "Error: Could not access microphone. Please ensure your browser has permission to use it.";
-            }
-        }
-        
-        // Stop the audio processing
-        function stopAudioProcessing() {
-            if (audioContext && audioContext.state !== 'closed') {
-                // Stop any ongoing processes
-                if (animationFrameId) {
-                    cancelAnimationFrame(animationFrameId);
-                }
-                
-                // Disconnect audio nodes
-                if (scriptProcessor) {
-                    scriptProcessor.disconnect();
-                }
-                
-                if (analyser) {
-                    analyser.disconnect();
-                }
-                
-                if (microphone) {
-                    microphone.disconnect();
-                }
-                
-                // Close the audio context
-                audioContext.close().then(() => {
-                    // Update status and UI
-                    isListening = false;
-                    statusElement.textContent = "Listening stopped.";
-                    
-                    // Clear displays
-                    resultDisplay.textContent = "-";
-                    frequencyDisplay.textContent = "Frequency: 0 Hz";
-                    
-                    // Update button states
-                    startButton.disabled = false;
-                    stopButton.disabled = true;
-                });
-            }
-        }
-        
-        // Event listeners
-        startButton.addEventListener('click', startAudioProcessing);
-        stopButton.addEventListener('click', stopAudioProcessing);
-        
-        // Handle window resize for canvas
-        window.addEventListener('resize', setupCanvas);
-        
-        // Initial setup
-        setupCanvas();
-    </script>
-</body>
-</html>
+                // Wait for 3 seconds and check if any sound was detected
+                setTimeout(() => {
+                    if (microphoneWorking) {
+                        statusElement.textContent = "Microphone is working! Play your guitar to detect notes.";
+                    } else {
+                        statusElement.textContent = "No sound detected. P

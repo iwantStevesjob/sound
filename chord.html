@@ -107,7 +107,7 @@
 </head>
 <body>
     <div class="container">
-        <h1>Audio Waveform Visualizer</h1>
+        <h1>Audio Waveform Visualizer v2</h1>
         
         <div class="status" id="status">Click "Start Listening" to begin</div>
         
@@ -121,6 +121,8 @@
         <div class="audio-info">
             <div id="frequency">Frequency: 0 Hz</div>
             <div id="volume">Volume: -∞ dB</div>
+            <div id="note">Note: -</div>
+            <div id="chord">Chord: -</div>
         </div>
         
         <div class="visual-options">
@@ -154,9 +156,58 @@
         const visualizerContext = visualizer.getContext('2d');
         const frequencyDisplay = document.getElementById('frequency');
         const volumeDisplay = document.getElementById('volume');
+        const noteDisplay = document.getElementById('note');
+        const chordDisplay = document.getElementById('chord');
         const peakMeterDisplay = document.getElementById('peak-meter');
         const visualTypeSelect = document.getElementById('visualType');
         const waveColorInput = document.getElementById('waveColor');
+        
+        // Music theory constants
+        const NOTES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+        const A4_FREQ = 440;
+        const A4_INDEX = 69; // MIDI note number for A4
+        
+        // Common guitar chords and their component notes
+        const CHORDS = {
+            'C': ['C', 'E', 'G'],
+            'Cm': ['C', 'D#', 'G'],
+            'C7': ['C', 'E', 'G', 'A#'],
+            'Cmaj7': ['C', 'E', 'G', 'B'],
+            'D': ['D', 'F#', 'A'],
+            'Dm': ['D', 'F', 'A'],
+            'D7': ['D', 'F#', 'A', 'C'],
+            'Dmaj7': ['D', 'F#', 'A', 'C#'],
+            'E': ['E', 'G#', 'B'],
+            'Em': ['E', 'G', 'B'],
+            'E7': ['E', 'G#', 'B', 'D'],
+            'Emaj7': ['E', 'G#', 'B', 'D#'],
+            'F': ['F', 'A', 'C'],
+            'Fm': ['F', 'G#', 'C'],
+            'F7': ['F', 'A', 'C', 'D#'],
+            'Fmaj7': ['F', 'A', 'C', 'E'],
+            'G': ['G', 'B', 'D'],
+            'Gm': ['G', 'A#', 'D'],
+            'G7': ['G', 'B', 'D', 'F'],
+            'Gmaj7': ['G', 'B', 'D', 'F#'],
+            'A': ['A', 'C#', 'E'],
+            'Am': ['A', 'C', 'E'],
+            'A7': ['A', 'C#', 'E', 'G'],
+            'Amaj7': ['A', 'C#', 'E', 'G#'],
+            'B': ['B', 'D#', 'F#'],
+            'Bm': ['B', 'D', 'F#'],
+            'B7': ['B', 'D#', 'F#', 'A'],
+            'Bmaj7': ['B', 'D#', 'F#', 'A#']
+        };
+        
+        // Guitar standard tuning strings (from low to high): E2, A2, D3, G3, B3, E4
+        const GUITAR_STRINGS = [
+            { note: 'E', octave: 2 }, // E2
+            { note: 'A', octave: 2 }, // A2
+            { note: 'D', octave: 3 }, // D3
+            { note: 'G', octave: 3 }, // G3
+            { note: 'B', octave: 3 }, // B3
+            { note: 'E', octave: 4 }  // E4
+        ];
         
         // Audio processing variables
         let audioContext;
@@ -169,6 +220,8 @@
         let animationFrameId;
         let peakVolume = -Infinity;
         let peakDecay = 0.01; // How quickly the peak meter falls
+        let activeNotes = new Set();
+        let lastDetectedNotes = [];
         
         // Visualization options
         let visualType = 'waveform';
@@ -189,6 +242,91 @@
             console.log(`Canvas set up with dimensions: ${visualizer.width}x${visualizer.height}`);
         }
         
+        // Convert frequency to note
+        function frequencyToNote(frequency) {
+            // Calculate the number of half steps away from A4
+            const halfStepsFromA4 = Math.round(12 * Math.log2(frequency / A4_FREQ));
+            
+            // Calculate MIDI note number
+            const midiNoteNumber = A4_INDEX + halfStepsFromA4;
+            
+            // Calculate note and octave
+            const noteIndex = ((midiNoteNumber % 12) + 12) % 12; // Ensure positive modulo
+            const octave = Math.floor(midiNoteNumber / 12) - 1;
+            
+            return {
+                note: NOTES[noteIndex],
+                octave: octave,
+                frequency: frequency
+            };
+        }
+        
+        // Find the closest guitar string for a given frequency
+        function findClosestGuitarString(noteInfo) {
+            const { note, octave } = noteInfo;
+            let closestString = null;
+            let smallestDistance = Infinity;
+            
+            GUITAR_STRINGS.forEach((string, index) => {
+                // Calculate "distance" based on note and octave
+                const stringNoteIndex = NOTES.indexOf(string.note);
+                const noteIndex = NOTES.indexOf(note);
+                
+                // Calculate total semitones for both
+                const stringSemitones = string.octave * 12 + stringNoteIndex;
+                const noteSemitones = octave * 12 + noteIndex;
+                
+                const distance = Math.abs(stringSemitones - noteSemitones);
+                
+                if (distance < smallestDistance) {
+                    smallestDistance = distance;
+                    closestString = {
+                        string: index + 1, // 1-indexed for human readability
+                        note: string.note,
+                        octave: string.octave
+                    };
+                }
+            });
+            
+            return closestString;
+        }
+        
+        // Find possible chord based on detected notes
+        function findPossibleChord(detectedNotes) {
+            if (detectedNotes.length === 0) return null;
+            if (detectedNotes.length === 1) return detectedNotes[0].note;
+            
+            // Extract just the note names (without octaves)
+            const noteNames = detectedNotes.map(noteInfo => noteInfo.note);
+            const uniqueNoteNames = [...new Set(noteNames)];
+            
+            // If we only have one unique note name, it's not a chord
+            if (uniqueNoteNames.length === 1) return uniqueNoteNames[0];
+            
+            // Check each chord definition against our detected notes
+            let bestMatch = null;
+            let bestMatchCount = 0;
+            let bestMatchName = null;
+            
+            for (const [chordName, chordNotes] of Object.entries(CHORDS)) {
+                // Count how many of the chord's notes we've detected
+                const matchedNotes = chordNotes.filter(note => uniqueNoteNames.includes(note));
+                const matchCount = matchedNotes.length;
+                
+                // For a match, we should have at least 3 notes, and they should represent at least 60% of the chord
+                if (matchCount >= 3 && matchCount >= chordNotes.length * 0.6) {
+                    // If this is a better match than our previous best, update
+                    if (matchCount > bestMatchCount) {
+                        bestMatchCount = matchCount;
+                        bestMatch = matchedNotes;
+                        bestMatchName = chordName;
+                    }
+                }
+            }
+            
+            return bestMatchName || "Unknown";
+        }
+        
         // Find the dominant frequency
         function findDominantFrequency() {
             // Skip the first few bins (very low frequencies, often noise)
@@ -206,6 +344,51 @@
             // Convert bin index to frequency
             const frequency = maxIndex * audioContext.sampleRate / (analyser.fftSize * 2);
             return { frequency, magnitude: maxValue };
+        }
+        
+        // Detect significant peaks in the frequency spectrum
+        function detectFrequencyPeaks(threshold = -70) {
+            const peaks = [];
+            
+            // Skip the very low frequency bins
+            for (let i = 10; i < bufferLength / 2; i++) {
+                // Only consider frequencies in the guitar range (approximately 80Hz to 1200Hz)
+                const frequency = i * audioContext.sampleRate / analyser.fftSize;
+                if (frequency < 80 || frequency > 1200) continue;
+                
+                // Check if this bin is a local maximum
+                if (frequencyDataArray[i] > threshold && 
+                    frequencyDataArray[i] > frequencyDataArray[i-1] && 
+                    frequencyDataArray[i] > frequencyDataArray[i+1]) {
+                    
+                    // Check it's a genuine peak (compare with neighbors)
+                    let isPeak = true;
+                    for (let j = 2; j <= 3; j++) {
+                        if (i-j >= 0 && frequencyDataArray[i] < frequencyDataArray[i-j]) {
+                            isPeak = false;
+                            break;
+                        }
+                        if (i+j < bufferLength && frequencyDataArray[i] < frequencyDataArray[i+j]) {
+                            isPeak = false;
+                            break;
+                        }
+                    }
+                    
+                    if (isPeak) {
+                        const frequency = i * audioContext.sampleRate / analyser.fftSize;
+                        peaks.push({
+                            frequency,
+                            magnitude: frequencyDataArray[i]
+                        });
+                    }
+                }
+            }
+            
+            // Sort by magnitude (strongest first)
+            peaks.sort((a, b) => b.magnitude - a.magnitude);
+            
+            // Take top 4 peaks (typical for a guitar chord)
+            return peaks.slice(0, 4);
         }
         
         // Calculate audio volume in dB

@@ -13,6 +13,12 @@
             padding: 20px;
             color: #333;
         }
+        
+        #chord {
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #2c3e50;
+        }
         .container {
             max-width: 800px;
             margin: 0 auto;
@@ -48,6 +54,19 @@
             background-color: #e8f4fd;
             border-radius: 8px;
             text-align: left;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+        
+        .chord-display {
+            grid-column: span 2;
+            text-align: center;
+            padding: 15px;
+            margin-top: 10px;
+            background-color: #fff;
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         }
         .visual-options {
             display: flex;
@@ -107,7 +126,7 @@
 </head>
 <body>
     <div class="container">
-        <h1>Audio Waveform Visualizer v2</h1>
+        <h1>Guitar Chord & Waveform Visualizer v1</h1>
         
         <div class="status" id="status">Click "Start Listening" to begin</div>
         
@@ -122,7 +141,9 @@
             <div id="frequency">Frequency: 0 Hz</div>
             <div id="volume">Volume: -∞ dB</div>
             <div id="note">Note: -</div>
-            <div id="chord">Chord: -</div>
+            <div class="chord-display">
+                <div id="chord">Chord: -</div>
+            </div>
         </div>
         
         <div class="visual-options">
@@ -222,6 +243,7 @@
         let peakDecay = 0.01; // How quickly the peak meter falls
         let activeNotes = new Set();
         let lastDetectedNotes = [];
+        let lastClearTime = null;
         
         // Visualization options
         let visualType = 'waveform';
@@ -244,6 +266,11 @@
         
         // Convert frequency to note
         function frequencyToNote(frequency) {
+            // First handle edge cases (extremely low or invalid frequencies)
+            if (frequency <= 0 || !isFinite(frequency)) {
+                return { note: "-", octave: 0, frequency: 0 };
+            }
+            
             // Calculate the number of half steps away from A4
             const halfStepsFromA4 = Math.round(12 * Math.log2(frequency / A4_FREQ));
             
@@ -253,6 +280,9 @@
             // Calculate note and octave
             const noteIndex = ((midiNoteNumber % 12) + 12) % 12; // Ensure positive modulo
             const octave = Math.floor(midiNoteNumber / 12) - 1;
+            
+            // Log the conversion for debugging
+            console.log(`Frequency ${frequency.toFixed(1)}Hz -> Note ${NOTES[noteIndex]}${octave}`);
             
             return {
                 note: NOTES[noteIndex],
@@ -313,10 +343,19 @@
                 const matchedNotes = chordNotes.filter(note => uniqueNoteNames.includes(note));
                 const matchCount = matchedNotes.length;
                 
-                // For a match, we should have at least 3 notes, and they should represent at least 60% of the chord
-                if (matchCount >= 3 && matchCount >= chordNotes.length * 0.6) {
+                // We'll relax our detection criteria to make it more sensitive
+                // For a match, either:
+                // 1. We should have at least 2 notes and they represent at least 50% of the chord
+                // 2. We have a perfect match for a two-note chord
+                const matchPercent = matchCount / chordNotes.length;
+                
+                if ((matchCount >= 2 && matchPercent >= 0.5) || 
+                    (matchCount === 2 && chordNotes.length === 2) ||
+                    (matchCount >= 3)) {
+                    
                     // If this is a better match than our previous best, update
-                    if (matchCount > bestMatchCount) {
+                    if (matchCount > bestMatchCount || 
+                       (matchCount === bestMatchCount && matchPercent > bestMatch / chordNotes.length)) {
                         bestMatchCount = matchCount;
                         bestMatch = matchedNotes;
                         bestMatchName = chordName;
@@ -324,7 +363,13 @@
                 }
             }
             
-            return bestMatchName || "Unknown";
+            // If we have 3 or more unique notes but couldn't find a chord match,
+            // report it as an "Unknown" chord
+            if (uniqueNoteNames.length >= 3 && !bestMatchName) {
+                return "Unknown";
+            }
+            
+            return bestMatchName || null;
         }
         
         // Find the dominant frequency
@@ -567,7 +612,55 @@
             // Calculate volume
             const { rms, db } = calculateVolume();
             
-            // Update displays
+            // Perform note and chord detection
+            // Use a more lenient threshold for detecting any sound
+            if (db > -50) {
+                // Get the note from the dominant frequency first
+                const dominantNoteInfo = frequencyToNote(frequency);
+                const closestString = findClosestGuitarString(dominantNoteInfo);
+                
+                // Always update the note display with what we're detecting
+                // This provides immediate feedback even if it's not a strong signal
+                noteDisplay.textContent = `Note: ${dominantNoteInfo.note}${dominantNoteInfo.octave}`;
+                
+                // Add note to active notes for chord detection if the signal is strong enough
+                if (db > -40 && magnitude > -80) {
+                    const noteKey = `${dominantNoteInfo.note}${dominantNoteInfo.octave}`;
+                    
+                    // Add to history with a simple debounce (only add if not just added)
+                    if (!activeNotes.has(noteKey)) {
+                        activeNotes.add(noteKey);
+                        console.log(`Added note: ${noteKey} at ${frequency.toFixed(1)}Hz`);
+                        
+                        // Add to detected notes array
+                        lastDetectedNotes.push(dominantNoteInfo);
+                        
+                        // Keep most recent notes (up to 6 for chord detection)
+                        if (lastDetectedNotes.length > 6) {
+                            lastDetectedNotes.shift();
+                        }
+                    }
+                }
+                
+                // Try to detect a chord based on recent history
+                if (lastDetectedNotes.length > 0) {
+                    const possibleChord = findPossibleChord(lastDetectedNotes);
+                    chordDisplay.textContent = `Chord: ${possibleChord || '-'}`;
+                    
+                    console.log("Active notes:", [...activeNotes]);
+                    console.log("Last detected notes:", lastDetectedNotes.map(n => n.note));
+                    console.log("Possible chord:", possibleChord);
+                }
+                
+                // Clear stale notes after 2 seconds
+                const currentTime = Date.now();
+                if (!lastClearTime || (currentTime - lastClearTime > 2000)) {
+                    activeNotes.clear();
+                    lastClearTime = currentTime;
+                }
+            }
+            
+            // Update frequency and volume displays
             frequencyDisplay.textContent = `Frequency: ${frequency.toFixed(1)} Hz`;
             volumeDisplay.textContent = `Volume: ${db.toFixed(1)} dB`;
             peakMeterDisplay.textContent = `Peak: ${peakVolume.toFixed(1)} dB`;
@@ -594,6 +687,11 @@
         // Start audio processing
         async function startAudioProcessing() {
             try {
+                // Reset state
+                activeNotes.clear();
+                lastDetectedNotes = [];
+                lastClearTime = null;
+                
                 // Set up the audio context
                 audioContext = new (window.AudioContext || window.webkitAudioContext)();
                 
@@ -604,10 +702,12 @@
                 // Create an audio source from the microphone
                 microphone = audioContext.createMediaStreamSource(stream);
                 
-                // Create an analyser node
+                // Create an analyser node - use a larger FFT size for better frequency resolution
                 analyser = audioContext.createAnalyser();
-                analyser.fftSize = 2048; // Must be a power of 2
-                analyser.smoothingTimeConstant = 0.85; // Smoothing for visualizations
+                analyser.fftSize = 4096; // Larger FFT size for better frequency resolution
+                analyser.minDecibels = -100; // Increase sensitivity
+                analyser.maxDecibels = -30;  // Adjust for typical guitar signal level
+                analyser.smoothingTimeConstant = 0.8; // Smoothing for visualizations
                 
                 // Connect the microphone to the analyser
                 microphone.connect(analyser);
@@ -625,6 +725,9 @@
                 // Update button states
                 startButton.disabled = true;
                 stopButton.disabled = false;
+                
+                console.log("Audio processing started with fftSize:", analyser.fftSize);
+                console.log("Buffer length:", bufferLength);
                 
             } catch (error) {
                 console.error("Error accessing microphone:", error);

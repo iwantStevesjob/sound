@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chord Detector</title>
+    <title>Guitar Chord/Note Detector v1</title>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -91,39 +91,13 @@
             color: #7f8c8d;
             margin-bottom: 10px;
         }
-        .microphone-status {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin: 15px 0;
-            gap: 10px;
-        }
-        .mic-indicator {
-            width: 24px;
-            height: 24px;
-            border-radius: 50%;
-            background-color: #e74c3c;
-            display: inline-block;
-            transition: background-color 0.3s ease;
-        }
-        .mic-indicator.active {
-            background-color: #27ae60;
-        }
-        .mic-text {
-            font-weight: bold;
-        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Guitar Chord/Note Detector</h1>
+        <h1>Guitar Chord/Note Detector v1</h1>
         
         <div id="status">Click "Start Listening" to begin</div>
-        
-        <div class="microphone-status">
-            <div id="mic-indicator" class="mic-indicator"></div>
-            <span class="mic-text">Microphone: <span id="mic-status">Not active</span></span>
-        </div>
         
         <div class="detector">
             <div class="visualizer">
@@ -136,7 +110,6 @@
             <div>
                 <button id="startButton">Start Listening</button>
                 <button id="stopButton" disabled>Stop Listening</button>
-                <button id="testButton">Test Microphone</button>
             </div>
         </div>
     </div>
@@ -192,15 +165,12 @@
         // DOM Elements
         const startButton = document.getElementById('startButton');
         const stopButton = document.getElementById('stopButton');
-        const testButton = document.getElementById('testButton');
         const resultDisplay = document.getElementById('result');
         const frequencyDisplay = document.getElementById('frequency');
         const visualizer = document.getElementById('visualizer');
         const visualizerContext = visualizer.getContext('2d');
         const statusElement = document.getElementById('status');
         const noteHistory = document.getElementById('note-history');
-        const micIndicator = document.getElementById('mic-indicator');
-        const micStatus = document.getElementById('mic-status');
         
         let audioContext;
         let analyser;
@@ -212,7 +182,6 @@
         let animationFrameId;
         let bufferLength;
         let dataArray;
-        let microphoneWorking = false;
         
         // Set the correct dimensions for the canvas
         function setupCanvas() {
@@ -311,20 +280,6 @@
             
             analyser.getByteTimeDomainData(dataArray);
             
-            // Calculate audio level for microphone indicator
-            let sum = 0;
-            for(let i = 0; i < dataArray.length; i++) {
-                sum += Math.abs(dataArray[i] - 128);
-            }
-            const average = sum / dataArray.length;
-            
-            // Update microphone indicator if sound is detected
-            if (average > 3) {  // Threshold for audio detection
-                microphoneWorking = true;
-                micIndicator.classList.add('active');
-                micStatus.textContent = 'Active';
-            }
-            
             visualizerContext.fillStyle = 'rgb(240, 240, 240)';
             visualizerContext.fillRect(0, 0, visualizer.width, visualizer.height);
             
@@ -363,26 +318,22 @@
             let maxValue = -Infinity;
             let maxIndex = -1;
             
-            // Only focus on guitar frequency range (approximately 80Hz - 1200Hz)
-            const lowerBinLimit = Math.floor(80 * analyser.fftSize / audioContext.sampleRate);
-            const upperBinLimit = Math.ceil(1200 * analyser.fftSize / audioContext.sampleRate);
-            
-            for (let i = lowerBinLimit; i < upperBinLimit; i++) {
+            for (let i = 0; i < bufferLength; i++) {
                 if (dataArray[i] > maxValue) {
                     maxValue = dataArray[i];
                     maxIndex = i;
                 }
             }
             
+            // Convert bin index to frequency (Hz)
+            const frequency = maxIndex * audioContext.sampleRate / (analyser.fftSize * 2);
+            
             // Only process if the frequency is in the range of a guitar (about 80Hz to 1200Hz)
-            // and if the amplitude is above a threshold
-            if (maxValue > -60) {
-                const frequency = maxIndex * audioContext.sampleRate / analyser.fftSize;
-                
-                frequencyDisplay.textContent = `Frequency: ${frequency.toFixed(1)} Hz`;
-                
+            if (frequency > 80 && frequency < 1200 && maxValue > -60) {
                 const noteInfo = frequencyToNote(frequency);
                 const closestString = findClosestGuitarString(noteInfo);
+                
+                frequencyDisplay.textContent = `Frequency: ${frequency.toFixed(1)} Hz`;
                 
                 // Add to active notes if not already present
                 let noteKey = `${noteInfo.note}${noteInfo.octave}`;
@@ -415,30 +366,6 @@
             }
         }
         
-        // Test if the microphone is working
-        function testMicrophone() {
-            statusElement.textContent = "Testing microphone... Please make a sound.";
-            
-            if (audioContext && isListening) {
-                // Reset state and wait for detection
-                microphoneWorking = false;
-                micIndicator.classList.remove('active');
-                micStatus.textContent = 'Testing...';
-                
-                // Wait for 3 seconds and check if any sound was detected
-                setTimeout(() => {
-                    if (microphoneWorking) {
-                        statusElement.textContent = "Microphone is working! Play your guitar to detect notes.";
-                    } else {
-                        statusElement.textContent = "No sound detected. Please check your microphone settings and try again.";
-                        micStatus.textContent = 'Not detecting sound';
-                    }
-                }, 3000);
-            } else {
-                startAudioProcessing();
-            }
-        }
-        
         // Start the audio processing
         async function startAudioProcessing() {
             try {
@@ -468,22 +395,15 @@
                 bufferLength = analyser.frequencyBinCount;
                 dataArray = new Float32Array(bufferLength);
                 
-                // Set up script processor for audio processing
-                javascriptNode = audioContext.createScriptProcessor(4096, 1, 1);
-                javascriptNode.onaudioprocess = function() {
-                    processAudio();
-                };
-                
-                // Connect the nodes
-                analyser.connect(javascriptNode);
-                javascriptNode.connect(audioContext.destination);
-                
                 // Start the visualization
                 setupCanvas();
                 updateVisualization();
                 
-                // Update button states
+                // Start processing audio at intervals
                 isListening = true;
+                setInterval(processAudio, 100);
+                
+                // Update button states
                 startButton.disabled = true;
                 stopButton.disabled = false;
                 
@@ -501,26 +421,13 @@
                     cancelAnimationFrame(animationFrameId);
                 }
                 
-                // Disconnect the nodes
-                if (javascriptNode) {
-                    javascriptNode.disconnect();
-                }
-                
-                if (analyser) {
-                    analyser.disconnect();
-                }
-                
+                // Disconnect the microphone if it exists
                 if (microphone) {
                     microphone.disconnect();
                 }
                 
                 // Close the audio context
                 audioContext.close();
-                
-                // Reset microphone indicator
-                microphoneWorking = false;
-                micIndicator.classList.remove('active');
-                micStatus.textContent = 'Not active';
                 
                 // Update status and UI
                 isListening = false;
@@ -535,7 +442,6 @@
         // Event listeners
         startButton.addEventListener('click', startAudioProcessing);
         stopButton.addEventListener('click', stopAudioProcessing);
-        testButton.addEventListener('click', testMicrophone);
         
         // Handle window resize for canvas
         window.addEventListener('resize', setupCanvas);

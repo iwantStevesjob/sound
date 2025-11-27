@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Pro Future Bass Engine</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    :root {
+      --primary: #ff7eb3;
+      --secondary: #845ec2;
+      --bg-dark: #121212;
+      --glass: rgba(255, 255, 255, 0.05);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+    }
+
+    body {
+      min-height: 100vh;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      overflow: hidden;
+    }
+
+    .app-container {
+      position: relative;
+      width: 100%;
+      max-width: 600px;
+      background: var(--glass);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 24px;
+      padding: 30px;
+      box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+      z-index: 2;
+    }
+
+    /* Visualizer Canvas */
+    canvas {
+      width: 100%;
+      height: 120px;
+      background: rgba(0,0,0,0.2);
+      border-radius: 12px;
+      margin-bottom: 20px;
+      border: 1px solid rgba(255,255,255,0.05);
+    }
+
+    h1 {
+      font-weight: 700;
+      background: linear-gradient(to right, var(--primary), #ffc75f);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 8px;
+    }
+
+    .controls-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      margin: 20px 0;
+    }
+
+    .control-group {
+      background: rgba(0,0,0,0.2);
+      padding: 15px;
+      border-radius: 12px;
+    }
+
+    label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.85rem;
+      color: #aaa;
+      margin-bottom: 8px;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      height: 6px;
+      background: #333;
+      border-radius: 4px;
+      outline: none;
+      -webkit-appearance: none;
+    }
+
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 16px;
+      height: 16px;
+      background: var(--primary);
+      border-radius: 50%;
+      cursor: pointer;
+      box-shadow: 0 0 10px var(--primary);
+    }
+
+    .btn-row {
+      display: flex;
+      gap: 15px;
+      margin-top: 10px;
+    }
+
+    button {
+      flex: 1;
+      padding: 14px;
+      border: none;
+      border-radius: 12px;
+      font-weight: 600;
+      font-size: 1rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .btn-primary {
+      background: var(--primary);
+      color: #000;
+      box-shadow: 0 4px 15px rgba(255, 126, 179, 0.3);
+    }
+    .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(255, 126, 179, 0.5); }
+    
+    .btn-secondary {
+      background: rgba(255,255,255,0.1);
+      color: #fff;
+    }
+    .btn-secondary:hover { background: rgba(255,255,255,0.2); }
+
+    .status {
+      font-size: 0.8rem;
+      color: #666;
+      text-align: center;
+      margin-top: 15px;
+    }
+
+    /* Background Animation blobs */
+    .blob {
+      position: absolute;
+      border-radius: 50%;
+      filter: blur(60px);
+      z-index: 0;
+      opacity: 0.4;
+      animation: float 10s infinite alternate;
+    }
+    .blob-1 { top: -10%; left: -10%; width: 300px; height: 300px; background: var(--primary); }
+    .blob-2 { bottom: -10%; right: -10%; width: 250px; height: 250px; background: var(--secondary); animation-delay: -5s; }
+
+    @keyframes float {
+      0% { transform: translate(0, 0); }
+      100% { transform: translate(30px, 50px); }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Background Ambience -->
+  <div class="blob blob-1"></div>
+  <div class="blob blob-2"></div>
+
+  <div class="app-container">
+    <h1>Future Bass Engine</h1>
+    <canvas id="visualizer"></canvas>
+
+    <div class="controls-grid">
+      <!-- Tempo Control -->
+      <div class="control-group">
+        <label>Tempo: <span id="bpmDisplay">140</span> BPM</label>
+        <input type="range" id="bpmInput" min="70" max="180" value="140">
+      </div>
+      
+      <!-- Filter Control -->
+      <div class="control-group">
+        <label>Filter Brightness</label>
+        <input type="range" id="filterInput" min="200" max="5000" value="1500">
+      </div>
+
+      <!-- LFO Speed -->
+      <div class="control-group">
+        <label>Wobble: <span id="wobbleDisplay">1/8</span></label>
+        <input type="range" id="wobbleInput" min="1" max="3" step="1" value="2">
+      </div>
+
+      <!-- Master Volume -->
+      <div class="control-group">
+        <label>Volume</label>
+        <input type="range" id="volInput" min="0" max="1" step="0.01" value="0.7">
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button id="playBtn" class="btn-primary">▶ Start Engine</button>
+      <button id="stopBtn" class="btn-secondary">⏹ Stop</button>
+    </div>
+
+    <div class="status" id="status">Audio engine ready. Press start.</div>
+  </div>
+
+<script>
+/**
+ * AUDIO ENGINE ARCHITECTURE
+ * Uses Lookahead Scheduling for precise timing.
+ */
+
+const ctx = new (window.AudioContext || window.webkitAudioContext)();
+const masterGain = ctx.createGain();
+const compressor = ctx.createDynamicsCompressor(); // Master bus compression
+const analyser = ctx.createAnalyser(); // For Visuals
+
+// Connections: MasterGain -> Compressor -> Analyser -> Destination
+masterGain.connect(compressor);
+compressor.connect(analyser);
+analyser.connect(ctx.destination);
+analyser.fftSize = 256;
+
+// State
+let isPlaying = false;
+let current16thNote = 0;
+let nextNoteTime = 0.0;
+let timerID = null;
+let scheduleAheadTime = 0.1;
+let lookahead = 25.0;
+
+// Params
+const params = {
+  bpm: 140,
+  filterFreq: 1500,
+  wobbleSpeed: 2, // 1=1/4, 2=1/8, 3=1/16
+  volume: 0.7
+};
+
+// --- CHORD PROGRESSION (F Major / D Minor) ---
+// Dm9 | Bbmaj7 | C6 | Fmaj7
+const chords = [
+  [50, 53, 57, 60, 64], // Dm9 (D F A C E)
+  [46, 50, 53, 57, 62], // Bbmaj7 (Bb D F A D)
+  [48, 52, 55, 60, 64], // C6 (C E G C E)
+  [41, 53, 57, 60, 64]  // Fmaj7 (F F A C E)
+];
+
+// --- SOUND GENERATORS ---
+
+function createReverb() {
+    // Simple convolution reverb setup (simulated for no external files)
+    // For this demo, we'll skip complex reverb to keep it single-file
+    // and just use release times to create space.
+}
+
+function playKick(time) {
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  
+  osc.frequency.setValueAtTime(150, time);
+  osc.frequency.exponentialRampToValueAtTime(0.001, time + 0.5);
+  
+  gain.gain.setValueAtTime(1, time);
+  gain.gain.exponentialRampToValueAtTime(0.001, time + 0.5);
+
+  osc.connect(gain);
+  gain.connect(masterGain);
+  
+  osc.start(time);
+  osc.stop(time + 0.5);
+}
+
+function playSnare(time) {
+  // Noise buffer
+  const bufferSize = ctx.sampleRate * 0.2; // 200ms
+  const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) {
+    data[i] = Math.random() * 2 - 1;
+  }
+
+  const noise = ctx.createBufferSource();
+  noise.buffer = buffer;
+  
+  const noiseFilter = ctx.createBiquadFilter();
+  noiseFilter.type = 'highpass';
+  noiseFilter.frequency.value = 1000;
+  
+  const noiseGain = ctx.createGain();
+  noiseGain.gain.setValueAtTime(0.8, time);
+  noiseGain.gain.exponentialRampToValueAtTime(0.01, time + 0.2);
+  
+  noise.connect(noiseFilter);
+  noiseFilter.connect(noiseGain);
+  noiseGain.connect(masterGain);
+  
+  noise.start(time);
+}
+
+function playHiHat(time) {
+  const bufferSize = ctx.sampleRate * 0.05;
+  const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) {
+    data[i] = Math.random() * 2 - 1;
+  }
+  
+  const noise = ctx.createBufferSource();
+  noise.buffer = buffer;
+  
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'highpass';
+  filter.frequency.value = 5000;
+  
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0.3, time);
+  gain.gain.exponentialRampToValueAtTime(0.01, time + 0.05);
+  
+  noise.connect(filter);
+  filter.connect(gain);
+  gain.connect(masterGain);
+  
+  noise.start(time);
+}
+
+function playSuperSawChord(chordNotes, time, duration) {
+  const rootFreq = midiToFreq(chordNotes[0]);
+  
+  // Create nodes
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.Q.value = 1;
+  
+  const amp = ctx.createGain();
+  amp.gain.value = 0; // Start silent
+
+  // SIDECHAIN / WOBBLE EFFECT
+  // We modulate the volume and filter cuttoff based on the beat
+  const secondsPerBeat = 60.0 / params.bpm;
+  const wobbleRate = secondsPerBeat / (params.wobbleSpeed === 3 ? 4 : params.wobbleSpeed === 2 ? 2 : 1); 
+  
+  // Attack/Release for the chord container
+  amp.gain.setValueAtTime(0, time);
+  amp.gain.linearRampToValueAtTime(0.3, time + 0.05); // Attack
+  amp.gain.setValueAtTime(0.3, time + duration - 0.1);
+  amp.gain.linearRampToValueAtTime(0, time + duration); // Release
+
+  // Filter Automation (The "Wub")
+  // We start at 0, go up to params.filterFreq, then down
+  // Repeating every beat or half beat
+  const steps = Math.floor(duration / wobbleRate);
+  
+  for(let i=0; i<steps; i++) {
+    const t = time + (i * wobbleRate);
+    // Envelope shape: Triangle/Saw
+    filter.frequency.setValueAtTime(200, t); 
+    filter.frequency.linearRampToValueAtTime(params.filterFreq, t + (wobbleRate * 0.3));
+    filter.frequency.exponentialRampToValueAtTime(200, t + wobbleRate);
+  }
+
+  // Sub Bass (Clean Sine)
+  const subOsc = ctx.createOscillator();
+  subOsc.type = 'sine';
+  subOsc.frequency.value = rootFreq / 2; // Octave down
+  const subGain = ctx.createGain();
+  subGain.gain.value = 0.5;
+  subOsc.connect(subGain);
+  subGain.connect(amp);
+  subOsc.start(time);
+  subOsc.stop(time + duration);
+
+  // Super Saw Stack
+  chordNotes.forEach((note, index) => {
+    const freq = midiToFreq(note);
+    // 2 Detuned oscillators per note
+    [-10, 10].forEach(detune => {
+      const osc = ctx.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.value = freq;
+      osc.detune.value = detune;
+      
+      // Pan each note slightly differently for width
+      const panner = ctx.createStereoPanner();
+      panner.pan.value = (Math.random() * 2 - 1) * 0.5;
+
+      const oscGain = ctx.createGain();
+      oscGain.gain.value = 0.05; // Keep low to prevent clipping
+
+      osc.connect(oscGain);
+      oscGain.connect(panner);
+      panner.connect(filter);
+      
+      osc.start(time);
+      osc.stop(time + duration);
+    });
+  });
+
+  filter.connect(amp);
+  amp.connect(masterGain);
+}
+
+// --- SCHEDULER LOGIC ---
+
+function nextNote() {
+  const secondsPerBeat = 60.0 / params.bpm;
+  // 16th note calculation
+  nextNoteTime += 0.25 * secondsPerBeat; 
+  current16thNote = (current16thNote + 1) % 64; // 4 bars of 16 notes
+}
+
+function scheduleNote(beatNumber, time) {
+  // 16th note grid
+  
+  // Determine Chord (Change every Bar / 16 steps)
+  const barIndex = Math.floor(beatNumber / 16) % 4;
+  const currentChord = chords[barIndex];
+  
+  // Play Chord on beat 1 of every bar
+  if (beatNumber % 16 === 0) {
+    const barDuration = (60/params.bpm) * 4;
+    playSuperSawChord(currentChord, time, barDuration);
+  }
+
+  // Drums
+  // Kick: Beats 1, and syncopated hits
+  // Future Bass Beat: Kick on 1 ... Kick on 3.5 (dotted)
+  const stepInBar = beatNumber % 16;
+  
+  // Kick pattern: 0 (1.1), 3 (1.1.4), 10 (3.3) approx style
+  if (stepInBar === 0 || stepInBar === 10) {
+    playKick(time);
+  }
+
+  // Snare/Clap: Beat 3 (step 8)
+  if (stepInBar === 8) {
+    playSnare(time);
+  }
+
+  // HiHats: Every 8th or 16th
+  if (stepInBar % 2 === 0) {
+     // Randomized velocity
+     if(Math.random() > 0.3) playHiHat(time);
+  }
+}
+
+function scheduler() {
+  // while there are notes that will need to play before the next interval, 
+  // schedule them and advance the pointer.
+  while (nextNoteTime < ctx.currentTime + scheduleAheadTime) {
+    scheduleNote(current16thNote, nextNoteTime);
+    nextNote();
+  }
+  timerID = window.setTimeout(scheduler, lookahead);
+}
+
+// --- UTILS ---
+
+function midiToFreq(m) {
+  return 440 * Math.pow(2, (m - 69) / 12);
+}
+
+// --- UI HANDLERS ---
+
+const playBtn = document.getElementById('playBtn');
+const stopBtn = document.getElementById('stopBtn');
+const statusEl = document.getElementById('status');
+
+// Sliders
+document.getElementById('bpmInput').addEventListener('input', (e) => {
+  params.bpm = parseInt(e.target.value);
+  document.getElementById('bpmDisplay').innerText = params.bpm;
+});
+
+document.getElementById('filterInput').addEventListener('input', (e) => {
+  params.filterFreq = parseInt(e.target.value);
+});
+
+document.getElementById('wobbleInput').addEventListener('input', (e) => {
+  const val = parseInt(e.target.value);
+  params.wobbleSpeed = val;
+  const map = {1: '1/4', 2: '1/8', 3: '1/16'};
+  document.getElementById('wobbleDisplay').innerText = map[val];
+});
+
+document.getElementById('volInput').addEventListener('input', (e) => {
+  masterGain.gain.cancelScheduledValues(ctx.currentTime);
+  masterGain.gain.setValueAtTime(e.target.value, ctx.currentTime);
+});
+
+playBtn.addEventListener('click', () => {
+  if (isPlaying) return;
+  
+  // Check AudioContext state (browser requirement)
+  if (ctx.state === 'suspended') {
+    ctx.resume();
+  }
+
+  isPlaying = true;
+  current16thNote = 0;
+  nextNoteTime = ctx.currentTime + 0.1;
+  
+  statusEl.innerText = "Engine Running...";
+  playBtn.classList.add('active'); // Visual feedback could be added here
+  
+  scheduler(); // Start loop
+  drawVisualizer(); // Start visuals
+});
+
+stopBtn.addEventListener('click', () => {
+  isPlaying = false;
+  window.clearTimeout(timerID);
+  statusEl.innerText = "Stopped.";
+});
+
+// --- VISUALIZER ---
+const canvas = document.getElementById('visualizer');
+const canvasCtx = canvas.getContext('2d');
+
+function drawVisualizer() {
+  if (!isPlaying) {
+    canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+    return;
+  }
+  
+  requestAnimationFrame(drawVisualizer);
+
+  const bufferLength = analyser.frequencyBinCount;
+  const dataArray = new Uint8Array(bufferLength);
+  analyser.getByteFrequencyData(dataArray);
+
+  canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const barWidth = (canvas.width / bufferLength) * 2.5;
+  let barHeight;
+  let x = 0;
+
+  for (let i = 0; i < bufferLength; i++) {
+    barHeight = dataArray[i] / 2;
+
+    // Gradient bars
+    const gradient = canvasCtx.createLinearGradient(0, canvas.height, 0, 0);
+    gradient.addColorStop(0, '#ff7eb3');
+    gradient.addColorStop(1, '#845ec2');
+
+    canvasCtx.fillStyle = gradient;
+    canvasCtx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
+
+    x += barWidth + 1;
+  }
+}
+
+// Handle resize for canvas
+function resize() {
+  canvas.width = canvas.parentElement.offsetWidth;
+  canvas.height = 120;
+}
+window.addEventListener('resize', resize);
+resize();
+
+</script>
+</body>
+</html>
